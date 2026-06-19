@@ -9,17 +9,22 @@
 //! - [`Input`] — a neutral view of an inbound interaction, decoded once at the
 //!   dispatch boundary so workflow logic never sees `ComponentInteraction` /
 //!   `ModalInteraction`.
-#![allow(dead_code)] // scaffolding: consumed as workflows migrate onto it
+#![allow(dead_code)] // reusable vocabulary; some surface (e.g. Style::Danger) isn't exercised yet
 
+mod collection;
+mod item;
 mod route;
 mod screen;
 
 use std::collections::HashMap;
 
+pub use collection::{Effect, FormCollection};
+pub use item::FormItem;
 pub use route::Route;
 pub use screen::{Choice, Control, Field, Screen, Style};
 use serenity::all::{
     ActionRowComponent, ComponentInteraction, ComponentInteractionDataKind, ModalInteraction,
+    UserId,
 };
 
 /// A neutral, backend-agnostic view of an inbound interaction.
@@ -31,6 +36,8 @@ use serenity::all::{
 pub struct Input {
     /// The route encoded in the triggering control's `custom_id`.
     pub route: Route,
+    /// The user who triggered the interaction.
+    pub user: UserId,
     /// Values from a select menu (empty for buttons / modals).
     pub selected: Vec<String>,
     /// Submitted modal fields, keyed by [`Field::id`]. Empty for components.
@@ -47,6 +54,7 @@ impl Input {
         };
         Some(Self {
             route,
+            user: interaction.user.id,
             selected,
             fields: HashMap::new(),
         })
@@ -68,6 +76,7 @@ impl Input {
         }
         Some(Self {
             route,
+            user: interaction.user.id,
             selected: Vec::new(),
             fields,
         })

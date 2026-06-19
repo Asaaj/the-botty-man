@@ -19,30 +19,50 @@ src/
   main.rs          — Config (clap), client setup, Ctrl+C shutdown
   bot.rs           — EventHandler: routes gateway events, registers slash commands on ready
   log.rs           — Global logging channel + discord_log! macro
+  cache.rs         — On-disk JSON cache (CacheContainer::load / ::save)
   skills/
-    mod.rs         — all_commands() registry and interaction dispatch
-    schedule.rs    — /schedule command and its modal handler
+    mod.rs         — Skill trait, SkillRegistry, interaction dispatch
+    schedule.rs    — /schedule: the reference form workflow
+    form/          — reusable spine for menu/form workflows
+      mod.rs         — Input: a decoded interaction; re-exports
+      screen.rs      — Screen vocabulary + into_response() (the ONLY serenity-builder code)
+      route.rs       — Route: typed custom_id encode/decode
+      item.rs        — FormItem trait (per-record field/parse knowledge)
+      collection.rs  — FormCollection<T>: cache-backed storage + Effect hook
 ```
 
-## Adding a skill
+## Skills
 
-1. Create `src/skills/<name>.rs` with:
-   - `pub const NAME: &str = "<name>";`
-   - `pub fn register() -> CreateCommand` — command definition
-   - `pub async fn run(ctx: &Context, interaction: &CommandInteraction)` — slash command handler
-   - If the command opens a modal: `pub const MODAL_ID: &str = "<name>_modal";` and `pub async fn handle_modal(ctx: &Context, interaction: &ModalInteraction)`
+A skill implements the `Skill` trait (`skills/mod.rs`): `name()`, `register() -> CreateCommand`, and optional `command` / `component` / `modal` async handlers (each defaults to an error). Skills are constructed in `SkillRegistry::new`, exposed to Discord via `all_commands()`, and routed in `dispatch()`:
 
-2. Add `pub mod <name>;` to `skills/mod.rs`
+- `Interaction::Command` routes by `command.data.name`.
+- `Interaction::Component` / `Interaction::Modal` route by the **first segment of the custom_id**, decoded via `Route` (`form/route.rs`). Every component/modal custom_id a skill emits must therefore be `"<name>/..."` — `skill_for_id` matches that first segment against the registry. (No more prefix-matching or `:`-smuggling of payloads in ids.)
 
-3. Add `<name>::register()` to the `vec!` in `all_commands()`
+### Adding a basic skill
 
-4. Add match arms in `dispatch()` for `Interaction::Command` and `Interaction::Modal` as needed
+1. Create `src/skills/<name>.rs` with a struct implementing `Skill` (`const NAME`, `name()`, `register()`, plus whichever handlers you need).
+2. Add `pub mod <name>;` to `skills/mod.rs`.
+3. Add `Box::new(<Name>::new(ctx).await)` to the `vec!` in `SkillRegistry::new`.
 
-See `skills/schedule.rs` as the reference implementation.
+`all_commands()` and `dispatch()` pick it up from the registry automatically.
+
+### Form workflows (the `form` module)
+
+`/schedule` is the reference. Multi-step menu/form skills are modeled as a state machine; the `form` module is the reusable spine and confines all serenity rendering to one place.
+
+- **`Step`** (skill-specific, in your skill file) enumerates the workflow states. Provide:
+  - `route()` / `from_route()` — the bijection between steps and custom_ids.
+  - `advance(self, &Input) -> Next` — a **pure** transition. `Next::Show(step)` renders a step, `Next::Run(Effect)` requests a mutation, `Next::Reply(msg)` is a terminal message. Keep mutation out of here.
+  - `screen(&self, &[T]) -> Screen` — builds the UI for renderable states.
+- **`FormItem`** (impl for your record type): `blank_fields`/`edit_fields` (feed the modal), `label` (menu option + the key `Effect::Update` matches on), `summary` (confirmation text), `create`/`update` (parse `Input` → record; parse before mutating so a bad field can't half-update a persisted record).
+- **`FormCollection<T>`** holds the records — load with `FormCollection::load(ctx, cache, file)`. Its `run(ctx, effect, input)` is the side-effect hook: it applies the `Effect` and **persists after every mutation** (save runs while the lock is held; a save failure is logged, not fatal).
+- The skill's handlers just decode an `Input` (`Input::from_component` / `from_modal`) and drive it: `from_route` → `advance` → match `Next` (call `screen`, or `collection.run`) → `Screen::into_response()`.
+
+Key boundary: workflow code never constructs serenity components — it produces a `Screen` (`form/screen.rs`), and `Screen::into_response()` is the only code that touches `CreateButton`/`CreateModal`/`CreateSelectMenu`.
 
 ## Serenity gotchas
 
-**`CreateInputText::new` argument order is `(style, label, custom_id)`** — label and custom_id look similar and are easy to swap. Swapping them causes modal field values to always come back empty because Discord echoes back the custom_id set at send time.
+**`CreateInputText::new` argument order is `(style, label, custom_id)`** — label and custom_id look similar and are easy to swap. Swapping them causes modal field values to always come back empty because Discord echoes back the custom_id set at send time. (Lives in `form/screen.rs`, `Field::into_row`.)
 
 **`MESSAGE_CODE_LIMIT` is 2000 Unicode code points**, not bytes. `discord_log!` truncates automatically using `char_indices`, not byte length.
 

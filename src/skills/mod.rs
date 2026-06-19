@@ -4,6 +4,7 @@ pub mod schedule;
 use std::{collections::HashMap, fmt::Debug};
 
 use anyhow::{Result, anyhow};
+use form::Route;
 use schedule::Schedule;
 use serenity::{
     all::{
@@ -80,10 +81,10 @@ impl SkillRegistry {
         }
     }
 
-    // Routes component and modal IDs to skills by prefix: "schedule_*" → schedule skill.
+    // Routes component and modal custom_ids to skills via their typed `Route`:
+    // the first path segment ("schedule/...") is the owning skill's name.
     fn skill_for_id(&self, id: &str) -> Option<&Box<dyn Skill>> {
-        self.skills
-            .values()
-            .find(|s| id.starts_with(s.name().as_str()))
+        let route = Route::decode(id)?;
+        self.skills.get(&route.skill)
     }
 }

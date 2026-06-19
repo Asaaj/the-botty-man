@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::Result;
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 use serenity::all::Context;
 
 use crate::log::discord_log;
@@ -45,6 +45,16 @@ impl CacheContainer {
         let bytes = tokio::fs::read(full_path).await?;
         let res = serde_json::from_slice(&bytes)?;
         Ok(res)
+    }
+
+    pub async fn save<T: Serialize>(
+        &self,
+        item: impl AsRef<Path>,
+        value: &T,
+    ) -> std::io::Result<()> {
+        let full_path = self.loc.join(item.as_ref());
+        let bytes = serde_json::to_vec_pretty(value)?;
+        tokio::fs::write(full_path, bytes).await
     }
 }
 
