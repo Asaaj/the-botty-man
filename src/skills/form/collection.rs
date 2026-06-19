@@ -19,6 +19,9 @@ pub enum Effect {
     Create,
     /// Update the record identified by `target` from the submitted fields.
     Update { target: String },
+    /// Record the acting user's response on the record identified by `target`
+    /// (via [`FormItem::respond`](super::FormItem::respond)).
+    Respond { target: String },
 }
 
 /// A cache-backed list of [`FormItem`] records plus the hook that interprets
@@ -78,6 +81,14 @@ impl<T: FormItem> FormCollection<T> {
                     .ok_or_else(|| anyhow!("'{target}' not found"))?;
                 item.update(input)?;
                 format!("Updated {}", item.summary())
+            }
+            Effect::Respond { target } => {
+                let item = items
+                    .iter_mut()
+                    .find(|item| item.label() == *target)
+                    .ok_or_else(|| anyhow!("'{target}' not found"))?;
+                item.respond(input)?;
+                format!("Response saved for {}", item.summary())
             }
         };
         if let Err(e) = self.cache.save(self.file, &*items).await {

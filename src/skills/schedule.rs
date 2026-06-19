@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{Result, anyhow};
 use chrono::{Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
@@ -20,6 +22,7 @@ const NAME: &str = "schedule";
 const FIELD_NAME: &str = "name";
 const FIELD_START: &str = "start_date";
 const FIELD_END: &str = "end_date";
+const FIELD_RESPONSE: &str = "response";
 
 #[derive(Debug)]
 pub struct Schedule {
@@ -97,12 +100,14 @@ impl Skill for Schedule {
 /// [`Step::from_route`], and render themselves via [`Step::screen`].
 #[derive(Debug, Clone)]
 enum Step {
-    /// `/schedule` invoked → offer the two choices.
+    /// `/schedule` invoked → offer the choices.
     Choose,
     /// The "propose a new schedule" branch.
     Propose(Propose),
     /// The "modify an existing schedule" branch.
     Modify(Modify),
+    /// The "respond to a proposed schedule" branch.
+    Respond(Respond),
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +127,20 @@ enum Modify {
     /// Show the pre-filled form for `target` (reached via `advance`, render only).
     Edit { target: String },
     /// The edited form was submitted (inbound only).
+    Submit { target: String },
+}
+
+#[derive(Debug, Clone)]
+enum Respond {
+    /// Button picked at the fork → show the select menu (inbound + renders).
+    List,
+    /// A schedule was chosen; the name rides in `Input::selected`, the responder
+    /// in `Input::user` (inbound only).
+    Pick,
+    /// Show the response form for `target`, pre-filled with `user`'s existing
+    /// response (reached via `advance`, render only).
+    Edit { target: String, user: UserId },
+    /// The response form was submitted (inbound only).
     Submit { target: String },
 }
 
@@ -147,9 +166,10 @@ impl Step {
     fn advance(self, input: &Input) -> Next {
         match self {
             // Inbound steps that simply render their own screen.
-            Step::Choose | Step::Propose(Propose::New) | Step::Modify(Modify::List) => {
-                Next::Show(self)
-            }
+            Step::Choose
+            | Step::Propose(Propose::New)
+            | Step::Modify(Modify::List)
+            | Step::Respond(Respond::List) => Next::Show(self),
             // A schedule was picked: lift the selection into the edit form's
             // target, then let `screen()` render it.
             Step::Modify(Modify::Pick) => match input.first_selected() {
@@ -158,11 +178,23 @@ impl Step {
                 })),
                 None => Next::Reply("No schedule selected.".into()),
             },
-            // Render-only state; produced by the arm above. Showing is a no-op.
-            Step::Modify(Modify::Edit { .. }) => Next::Show(self),
+            // Same, but the response form also needs to know whose response to
+            // pre-fill, so carry the responder along.
+            Step::Respond(Respond::Pick) => match input.first_selected() {
+                Some(target) => Next::Show(Step::Respond(Respond::Edit {
+                    target: target.to_string(),
+                    user: input.user,
+                })),
+                None => Next::Reply("No schedule selected.".into()),
+            },
+            // Render-only states; produced by the arms above. Showing is a no-op.
+            Step::Modify(Modify::Edit { .. }) | Step::Respond(Respond::Edit { .. }) => {
+                Next::Show(self)
+            }
             // Form submissions become declarative side-effects.
             Step::Propose(Propose::Submit) => Next::Run(Effect::Create),
             Step::Modify(Modify::Submit { target }) => Next::Run(Effect::Update { target }),
+            Step::Respond(Respond::Submit { target }) => Next::Run(Effect::Respond { target }),
         }
     }
 
@@ -178,6 +210,15 @@ impl Step {
             Step::Modify(Modify::Edit { target } | Modify::Submit { target }) => {
                 Route::new(NAME, [
                     "modify".to_string(),
+                    "submit".to_string(),
+                    target.clone(),
+                ])
+            }
+            Step::Respond(Respond::List) => Route::new(NAME, ["respond"]),
+            Step::Respond(Respond::Pick) => Route::new(NAME, ["respond", "pick"]),
+            Step::Respond(Respond::Edit { target, .. } | Respond::Submit { target }) => {
+                Route::new(NAME, [
+                    "respond".to_string(),
                     "submit".to_string(),
                     target.clone(),
                 ])
@@ -198,6 +239,11 @@ impl Step {
             ["modify"] => Step::Modify(Modify::List),
             ["modify", "pick"] => Step::Modify(Modify::Pick),
             ["modify", "submit", target] => Step::Modify(Modify::Submit {
+                target: target.to_string(),
+            }),
+            ["respond"] => Step::Respond(Respond::List),
+            ["respond", "pick"] => Step::Respond(Respond::Pick),
+            ["respond", "submit", target] => Step::Respond(Respond::Submit {
                 target: target.to_string(),
             }),
             _ => return None,
@@ -224,6 +270,11 @@ impl Step {
                         style: Style::Secondary,
                         route: Step::Modify(Modify::List).route(),
                     },
+                    Control {
+                        label: "Respond to a proposal".into(),
+                        style: Style::Secondary,
+                        route: Step::Respond(Respond::List).route(),
+                    },
                 ],
             },
             Step::Propose(Propose::New) => Screen::Form {
@@ -231,23 +282,11 @@ impl Step {
                 title: "New Schedule".into(),
                 fields: ProposedSchedule::blank_fields(),
             },
-            Step::Modify(Modify::List) => {
-                if items.is_empty() {
-                    Screen::Message("No proposed schedules to modify.".into())
-                } else {
-                    Screen::Select {
-                        route: Step::Modify(Modify::Pick).route(),
-                        placeholder: "Choose a schedule".into(),
-                        options: items
-                            .iter()
-                            .map(|s| Choice {
-                                label: s.name.clone(),
-                                value: s.name.clone(),
-                            })
-                            .collect(),
-                    }
-                }
-            }
+            Step::Modify(Modify::List) => schedule_picker(
+                Step::Modify(Modify::Pick).route(),
+                items,
+                "No proposed schedules to modify.",
+            ),
             Step::Modify(Modify::Edit { target }) => {
                 match items.iter().find(|s| &s.name == target) {
                     Some(schedule) => Screen::Form {
@@ -261,10 +300,57 @@ impl Step {
                     None => Screen::Message(format!("Schedule '{target}' not found.")),
                 }
             }
+            Step::Respond(Respond::List) => schedule_picker(
+                Step::Respond(Respond::Pick).route(),
+                items,
+                "No proposed schedules to respond to.",
+            ),
+            Step::Respond(Respond::Edit { target, user }) => {
+                match items.iter().find(|s| &s.name == target) {
+                    Some(schedule) => Screen::Form {
+                        route: Step::Respond(Respond::Submit {
+                            target: target.clone(),
+                        })
+                        .route(),
+                        title: "Your Response".into(),
+                        fields: vec![Field {
+                            id: FIELD_RESPONSE.into(),
+                            label: "When works for you?".into(),
+                            value: schedule.responses.get(user).cloned().unwrap_or_default(),
+                            placeholder: Some("e.g. weekday evenings, or any Saturday".into()),
+                            multiline: true,
+                        }],
+                    },
+                    None => Screen::Message(format!("Schedule '{target}' not found.")),
+                }
+            }
             // Inbound-only steps; `advance` handles these before any render.
             Step::Propose(Propose::Submit)
             | Step::Modify(Modify::Pick)
-            | Step::Modify(Modify::Submit { .. }) => Screen::Message("Working…".into()),
+            | Step::Modify(Modify::Submit { .. })
+            | Step::Respond(Respond::Pick)
+            | Step::Respond(Respond::Submit { .. }) => Screen::Message("Working…".into()),
+        }
+    }
+}
+
+/// A select menu of every proposed schedule, or `empty` when there are none.
+/// Shared by the modify and respond branches; the chosen name comes back in
+/// `Input::selected` at `route`.
+fn schedule_picker(route: Route, items: &[ProposedSchedule], empty: &str) -> Screen {
+    if items.is_empty() {
+        Screen::Message(empty.into())
+    } else {
+        Screen::Select {
+            route,
+            placeholder: "Choose a schedule".into(),
+            options: items
+                .iter()
+                .map(|s| Choice {
+                    label: s.name.clone(),
+                    value: s.name.clone(),
+                })
+                .collect(),
         }
     }
 }
@@ -286,6 +372,10 @@ struct ProposedSchedule {
     is_active: bool,
     start_date: NaiveDate,
     end_date: NaiveDate,
+    /// Each responder's freeform reply, keyed by user. `serde(default)` keeps
+    /// schedules saved before this field existed loadable.
+    #[serde(default)]
+    responses: HashMap<UserId, String>,
 }
 
 impl FormItem for ProposedSchedule {
@@ -338,6 +428,7 @@ impl FormItem for ProposedSchedule {
             is_active: true,
             start_date: parse_date(input.field(FIELD_START))?,
             end_date: parse_date(input.field(FIELD_END))?,
+            responses: HashMap::new(),
         })
     }
 
@@ -350,6 +441,12 @@ impl FormItem for ProposedSchedule {
         self.name = name;
         self.start_date = start_date;
         self.end_date = end_date;
+        Ok(())
+    }
+
+    fn respond(&mut self, input: &Input) -> Result<()> {
+        let response = input.field(FIELD_RESPONSE).unwrap_or_default().to_string();
+        self.responses.insert(input.user, response);
         Ok(())
     }
 }

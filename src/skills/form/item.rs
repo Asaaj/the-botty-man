@@ -2,7 +2,7 @@
 
 use std::fmt::Debug;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use serde::{Serialize, de::DeserializeOwned};
 
 use super::{Field, Input};
@@ -32,4 +32,11 @@ pub trait FormItem: Serialize + DeserializeOwned + Send + Sync + Sized + Debug {
 
     /// Update this record from a submitted form.
     fn update(&mut self, input: &Input) -> Result<()>;
+
+    /// Record the acting user's (`input.user`) contribution to this record from
+    /// a submitted form. Defaults to rejecting — only record types that collect
+    /// per-user input override it.
+    fn respond(&mut self, _input: &Input) -> Result<()> {
+        Err(anyhow!("this record does not accept responses"))
+    }
 }
