@@ -1,3 +1,4 @@
+pub mod form;
 pub mod schedule;
 
 use std::{collections::HashMap, fmt::Debug};
