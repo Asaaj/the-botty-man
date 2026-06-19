@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::Parser;
 use serenity::{
     Client,
@@ -5,6 +7,7 @@ use serenity::{
 };
 
 mod bot;
+mod cache;
 mod log;
 mod skills;
 use bot::Handler;
@@ -22,6 +25,10 @@ pub struct Config {
     /// Guild ID (snowflake) to register commands on. Omit to register globally (up to 1 hour propagation).
     #[arg(long, env = "GUILD_ID")]
     pub guild_id: Option<String>,
+
+    /// Directory used for caching data.
+    #[arg(long, env = "CACHE_LOC", default_value = ".cache")]
+    pub cache_loc: PathBuf,
 }
 
 #[tokio::main]
@@ -33,6 +40,7 @@ async fn main() {
             .parse()
             .expect("logging_channel must be a valid channel ID (snowflake)"),
     ));
+    cache::Cache::install(&config.cache_loc).unwrap();
 
     let intents = GatewayIntents::GUILD_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
 

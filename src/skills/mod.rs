@@ -1,21 +1,64 @@
 pub mod schedule;
 
-use serenity::all::{Context, CreateCommand, Interaction};
+use std::{collections::HashMap, fmt::Debug};
 
-pub fn all_commands() -> Vec<CreateCommand> {
-    vec![schedule::register()]
+use anyhow::{Result, anyhow};
+use schedule::Schedule;
+use serenity::{
+    all::{CommandInteraction, Context, CreateCommand, Interaction, ModalInteraction},
+    async_trait,
+};
+
+#[async_trait]
+pub trait Skill: Send + Sync + Debug {
+    fn name(&self) -> String;
+
+    fn register(&self, ctx: &Context) -> CreateCommand;
+
+    async fn command(&self, _ctx: &Context, _command: &CommandInteraction) -> Result<()> {
+        Err(anyhow!("{} is not a valid command", self.name()))
+    }
+
+    async fn modal(&self, _ctx: &Context, _modal: &ModalInteraction) -> Result<()> {
+        Err(anyhow!("{} is not a valid modal", self.name()))
+    }
 }
 
-pub async fn dispatch(ctx: &Context, interaction: &Interaction) {
-    match interaction {
-        Interaction::Command(command) => match command.data.name.as_str() {
-            schedule::NAME => schedule::run(ctx, command).await,
-            name => eprintln!("Unknown command: {name}"),
-        },
-        Interaction::Modal(modal) => match modal.data.custom_id.as_str() {
-            schedule::MODAL_ID => schedule::handle_modal(ctx, modal).await,
-            id => eprintln!("Unknown modal: {id}"),
-        },
-        _ => {}
+#[derive(Debug)]
+pub struct SkillRegistry {
+    skills: HashMap<String, Box<dyn Skill>>,
+}
+impl SkillRegistry {
+    pub async fn new(ctx: &Context) -> Self {
+        let skills: Vec<Box<dyn Skill>> = vec![Box::new(Schedule::new(ctx).await)];
+        let skills = skills.into_iter().map(|s| (s.name(), s)).collect();
+        Self { skills }
+    }
+
+    pub fn all_commands(&self, ctx: &Context) -> Vec<CreateCommand> {
+        self.skills.values().map(|s| s.register(ctx)).collect()
+    }
+
+    pub async fn dispatch(&self, ctx: &Context, interaction: &Interaction) -> Result<()> {
+        match interaction {
+            Interaction::Command(command) => {
+                if let Some(skill) = self.skills.get(&command.data.name) {
+                    skill.command(ctx, command).await
+                } else {
+                    Err(anyhow!("{} is not a registered command", command.data.name))
+                }
+            }
+            Interaction::Modal(modal) => {
+                if let Some(skill) = self.skills.get(&modal.data.custom_id) {
+                    skill.modal(ctx, modal).await
+                } else {
+                    Err(anyhow!(
+                        "{} is not a registered modal",
+                        modal.data.custom_id
+                    ))
+                }
+            }
+            _ => Ok(()),
+        }
     }
 }
