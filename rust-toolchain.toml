@@ -1,0 +1,7 @@
+# Nightly is required: .rustfmt.toml uses the unstable `imports_granularity`
+# and `group_imports` options, which rustfmt only honors on the nightly channel.
+# rustup reads this automatically and installs the channel + components on first
+# use in this directory.
+[toolchain]
+channel = "nightly"
+components = ["rust-analyzer", "rustfmt", "clippy"]
