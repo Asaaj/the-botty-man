@@ -1,0 +1,51 @@
+use clap::Parser;
+use serenity::{
+    Client,
+    all::{ChannelId, GatewayIntents},
+};
+
+mod bot;
+mod log;
+use bot::Handler;
+
+#[derive(Parser, Debug)]
+pub struct Config {
+    /// Token for the Discord bot (Bot page in the Applications section of the developer portal).
+    #[arg(long, env = "DISCORD_TOKEN")]
+    pub bot_token: String,
+
+    /// Channel ID (snowflake) to send log messages to.
+    #[arg(long, env = "LOGGING_CHANNEL_ID")]
+    pub logging_channel: String,
+}
+
+#[tokio::main]
+async fn main() {
+    let config = Config::parse();
+    log::init(ChannelId::new(
+        config
+            .logging_channel
+            .parse()
+            .expect("logging_channel must be a valid channel ID (snowflake)"),
+    ));
+
+    let intents = GatewayIntents::GUILD_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
+
+    let mut client = Client::builder(&config.bot_token, intents)
+        .event_handler(Handler::from_config(&config))
+        .await
+        .expect("Error creating client");
+
+    let shard_manager = client.shard_manager.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to listen for Ctrl+C");
+        eprintln!("\nGoodbye!");
+        shard_manager.shutdown_all().await;
+    });
+
+    if let Err(e) = client.start().await {
+        eprintln!("Client error: {e:?}");
+    }
+}
