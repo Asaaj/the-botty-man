@@ -3,6 +3,8 @@ use std::{
     sync::OnceLock,
 };
 
+use anyhow::Result;
+use serde::de::DeserializeOwned;
 use serenity::all::Context;
 
 use crate::log::discord_log;
@@ -36,6 +38,13 @@ impl CacheContainer {
     async fn new(ctx: &Context, name: String, loc: PathBuf) -> Self {
         create_dirs(ctx, &loc).await;
         Self { name, loc }
+    }
+
+    pub async fn load<T: DeserializeOwned>(&self, item: impl AsRef<Path>) -> std::io::Result<T> {
+        let full_path = self.loc.join(item.as_ref());
+        let bytes = tokio::fs::read(full_path).await?;
+        let res = serde_json::from_slice(&bytes)?;
+        Ok(res)
     }
 }
 
