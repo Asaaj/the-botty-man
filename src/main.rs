@@ -6,6 +6,7 @@ use serenity::{
 
 mod bot;
 mod log;
+mod skills;
 use bot::Handler;
 
 #[derive(Parser, Debug)]
@@ -17,6 +18,10 @@ pub struct Config {
     /// Channel ID (snowflake) to send log messages to.
     #[arg(long, env = "LOGGING_CHANNEL_ID")]
     pub logging_channel: String,
+
+    /// Guild ID (snowflake) to register commands on. Omit to register globally (up to 1 hour propagation).
+    #[arg(long, env = "GUILD_ID")]
+    pub guild_id: Option<String>,
 }
 
 #[tokio::main]
